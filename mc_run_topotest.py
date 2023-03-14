@@ -12,7 +12,6 @@ import seaborn as sns
 from scipy import stats
 from scipy.spatial.distance import cdist
 from scipy.stats import levy_stable
-from scipy.signal import spectrogram
 from symulacja_py import impsim
 from tqdm import tqdm
 
@@ -54,29 +53,46 @@ skip = 1#200#0#100
 #start = min([np.min(d) for d in pds])-0.005
 #end = max([np.max(d) for d in pds])+0.005
 #print(start,end)
-start = 2.98
-end = 3.7
+start = 0
+end = 5
 grid = np.linspace(start,end,10000)
 
 
-def cvb(S):
-    quantiles = np.concatenate([np.array([float("-inf")]),
-                          np.array([np.quantile(S, q) for q in [0.004,
-                          0.062,
-                          0.308,
-                          0.692,
-                          0.938,
-                          0.996]]),
-                        np.array([float("inf")])])
-    quantiles_partition = [S[(S>quantiles[i]) & (S <= quantiles[i+1])] for i in range(0,len(quantiles)-1)] 
-    C1 = ((np.var(quantiles_partition[2])-np.var(quantiles_partition[3]))/np.var(S) + (np.var(quantiles_partition[4])-np.var(quantiles_partition[3]))/np.var(S))**2
-    return C1*np.sqrt(len(S))
+def generate_data_compute_bc(alpha, amplitude, seed, dim, delay, skip, normalize = True, weighted = False):
+    data = create_signal(alpha, amplitude, seed)
+    #dim * delay should roughly equal len(time_series)/numer_of_periods
+    dim = 3*833#417# half period
+    delay = len(data)//dim
+    #print("delay", delay)
+    skip = 1#200#0#100
+    #print(dim*delay)
+    #print(len(data[0])/24)
 
-def generate_data_compute_bc(alpha, amplitude, seed, dim, delay, skip, normalize = True, weighted = True):
-    x = create_signal(alpha, amplitude, seed)
-    freqs, t, Pxx = spectrogram(x, fs=25000, nfft=512, window="hamming", nperseg= 256, noverlap= int(np.floor(0.85*256)),detrend = False, mode="magnitude")
-    return np.array([cvb(np.abs(Pxx[i])) for i in range(0,len(freqs))])
+    #print("===============computing SWE====================")
+    tde = TimeDelayEmbedding(dim = dim, delay=delay, skip=skip)
+    point_clouds = tde.transform([data])[0]
+    #point_clouds = levy_stable.rvs(alpha,0,0, size=(100,2))
+
+    if (normalize):
+        point_clouds = point_clouds-np.mean(point_clouds,1)[:, None]
+        point_clouds = point_clouds/np.sqrt(np.sum(point_clouds**2, 1))[:, None]
+
+    pc = point_clouds
+    if weighted:
+        dist = cdist(pc,pc)
+        dtm = DistanceToMeasure(5, dim = 10, q=2, metric="precomputed")
+        r = dtm.fit_transform(dist)
+        ac = WeightedRipsComplex(distance_matrix=dist,weights = 1/r)
+    else:
+        ac = gd.RipsComplex(points=pc)
     
+    st = ac.create_simplex_tree(max_dimension = 2)
+    st.compute_persistence()
+    pd = st.persistence_intervals_in_dimension(1)
+
+    bc = BettiCurve(predefined_grid=grid)
+    betti_curve = bc.fit_transform([pd])
+    return betti_curve[0]
     
 metric = "l1"
 avg_bcs=[]
@@ -120,10 +136,12 @@ ax.set_xticklabels(np.round(amplitudes,1),  fontsize = 16)
 ax.set_xlabel("amplitude",  fontsize = 20)
 ax.set_ylabel("alpha",  fontsize = 20)
 
+
+
 #ax.scatter(np.linspace(0,20,21), 19*(-1.1+(1.7/((0.1*np.linspace(0,20,21))**(0.2)))), color="red")
-plt.title("CVB Test power estimated via {} MC iterations".format(mc_iterations))
+plt.title("TDA Test power estimated via {} MC iterations".format(mc_iterations))
 sns.set(font_scale=50)
-plt.savefig("NEW-alpha-amplitudes-magnitude-CVB-GoF-test-powers{}.pdf".format(mc_iterations))
+plt.savefig("normalized_unweighted_topotest-powers{}.pdf".format(mc_iterations))
 plt.show()
 
-np.savetxt("{}iterations_{}-metric_magnitude-CVB-test_powers_alpha1.1-2_amplitude0-2.txt".format(mc_iterations,metric),np.array(test_powers_alpha))
+np.savetxt("{}iterations_{}-metric_normalized_unweighted_topotest.txt".format(mc_iterations,metric),np.array(test_powers_alpha))
