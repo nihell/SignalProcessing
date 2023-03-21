@@ -15,6 +15,8 @@ from scipy.spatial.distance import cdist
 from scipy.stats import levy_stable
 from symulacja_py import impsim
 from tqdm import tqdm
+from scipy.signal import spectrogram
+
 
 
 def compute_diagram(data, dim, delay, skip, normalize = True, weighted = True, point_cloud_size = 100):
@@ -66,7 +68,20 @@ def create_signal(alpha, impulse_amplitude, seed):
     signal_l = 2*impsim(fs,varsize,fmod,amp_imp,f_center,bandwidth,shift)+szum
     return signal_l
 
-def generate_data_compute_bc(alpha, amplitude, seed, dim, delay, skip, normalize = True, weighted = False, method = "tda"):
+def cvb(S):
+    quantiles = np.concatenate([np.array([float("-inf")]),
+                          np.array([np.quantile(S, q) for q in [0.004,
+                          0.062,
+                          0.308,
+                          0.692,
+                          0.938,
+                          0.996]]),
+                        np.array([float("inf")])])
+    quantiles_partition = [S[(S>quantiles[i]) & (S <= quantiles[i+1])] for i in range(0,len(quantiles)-1)] 
+    C1 = ((np.var(quantiles_partition[2])-np.var(quantiles_partition[3]))/np.var(S) + (np.var(quantiles_partition[4])-np.var(quantiles_partition[3]))/np.var(S))**2
+    return C1*np.sqrt(len(S))
+
+def generate_data_compute_bc(alpha, amplitude, seed, dim, delay, skip, normalize = True, weighted = True, method = "tda"):
     if method == "tda":
 
         data = create_signal(alpha, amplitude, seed)
@@ -77,7 +92,9 @@ def generate_data_compute_bc(alpha, amplitude, seed, dim, delay, skip, normalize
         skip = 1#200#0#100
         #print(dim*delay)
         #print(len(data[0])/24)
-
+        start = 0
+        end = 5
+        grid = np.linspace(start,end,257)
         #print("===============computing SWE====================")
         tde = TimeDelayEmbedding(dim = dim, delay=delay, skip=skip)
         point_clouds = tde.transform([data])[0]
@@ -109,16 +126,16 @@ def generate_data_compute_bc(alpha, amplitude, seed, dim, delay, skip, normalize
         freqs, t, Pxx = spectrogram(x, fs=25000, nfft=512, window="hamming", nperseg= 256, noverlap= int(np.floor(0.85*256)),detrend = False, mode="magnitude")
         return np.array([cvb(np.abs(Pxx[i])) for i in range(0,len(freqs))])
 
-def compute_tests_powers(alphas, amplitudes, mc_iterations, metric = "l1", method = "tda"):
+def compute_test_powers(alphas, amplitudes, mc_iterations, dim =3*833, delay=1, skip=1, metric = "l1", method = "tda"):
     acc_threshs = np.zeros_like(alphas, dtype = float)
 
     avg_bcs=[]
     for i in tqdm(range(0,len(alphas))):
         alpha=alphas[i]
-        betti_curves = Parallel(n_jobs=-1)(delayed(generate_data_compute_bc)(alpha, 0, k, dim, delay, skip, method = method) for k in range(0,mc_iterations))
+        betti_curves = Parallel(n_jobs=-1)(delayed(generate_data_compute_bc)(alpha, 0, k, dim, delay, skip, True, True, method) for k in range(0,mc_iterations))
         avg_bc = np.mean(betti_curves, axis=0)
         avg_bcs.append(avg_bc)
-        new_betti_curves = Parallel(n_jobs=-1)(delayed(generate_data_compute_bc)(alpha, 0, mc_iterations+k, dim, delay, skip, method = method) for k in range(0,mc_iterations))
+        new_betti_curves = Parallel(n_jobs=-1)(delayed(generate_data_compute_bc)(alpha, 0, mc_iterations+k, dim, delay, skip, True, True, method) for k in range(0,mc_iterations))
         if metric == "l1":
             acc_thresh = np.quantile(pairwise_distances([avg_bc],new_betti_curves, "minkowski", p=1, n_jobs=-1)[0],0.95)
         elif metric == "max":
@@ -132,7 +149,7 @@ def compute_tests_powers(alphas, amplitudes, mc_iterations, metric = "l1", metho
             alpha=alphas[i]
             #print("alpha = ",alpha,", amp = ", amp)
             seed = int(2*mc_iterations*(amp+1))
-            test_betti_curves = Parallel(n_jobs=-1)(delayed(generate_data_compute_bc)(alpha, amp, seed+k, dim, delay, skip, method=method) for k in range(0,mc_iterations))
+            test_betti_curves = Parallel(n_jobs=-1)(delayed(generate_data_compute_bc)(alpha, amp, seed+k, dim, delay, skip, True, True, method) for k in range(0,mc_iterations))
             if metric == "l1":
                 dists = pairwise_distances([avg_bcs[i]],test_betti_curves, "minkowski",p=1,n_jobs=-1)[0]
             elif metric == "max":
@@ -142,22 +159,26 @@ def compute_tests_powers(alphas, amplitudes, mc_iterations, metric = "l1", metho
             test_powers_alpha[i][j] =power
     return test_powers_alpha
 
-def plot_test_power_matrix(alphas, amplitudes, mc_iterations, test_powers_alpha):
-    f,ax = plt.subplots(figsize = (len(amplitudes),len(alphas)))
+def plot_test_power_matrix(alphas, amplitudes, mc_iterations, test_powers_alpha, method, ax = None):
+    if ax == None:
+        ax = plt.gca()
+    #
     plt.rc('font', **{'size'   : 20})
     plt.rcParams["axes.labelsize"] = 20
-    sns.heatmap(test_powers_alpha, annot=True, cbar=False)
-
-    ax.set_yticklabels(np.round(alphas,2),  fontsize = 16)
-    ax.set_xticklabels(np.round(amplitudes,1),  fontsize = 16)
+    sns.heatmap(test_powers_alpha, annot=True, cbar=False, ax=ax)
 
     ax.set_xlabel("amplitude",  fontsize = 20)
     ax.set_ylabel("alpha",  fontsize = 20)
-
-
+    
+    ax.set_xticks(np.arange(len(amplitudes))+0.5)
+    ax.set_yticks(np.arange(len(alphas))+0.5)
+    
+    ax.set_yticklabels(np.round(alphas,2),  fontsize = 16)
+    ax.set_xticklabels(np.round(amplitudes,1),  fontsize = 16)
 
     #ax.scatter(np.linspace(0,20,21), 19*(-1.1+(1.7/((0.1*np.linspace(0,20,21))**(0.2)))), color="red")
-    plt.title("TDA Test power estimated via {} MC iterations".format(mc_iterations))
-    sns.set(font_scale=50)
-    plt.savefig("normalized_unweighted_topotest-powers{}.pdf".format(mc_iterations))
-    plt.show()
+    plt.title("{} Test power estimated via {} MC iterations".format(method,mc_iterations))
+    #sns.set(font_scale=50)
+    return(ax)
+    
+    
