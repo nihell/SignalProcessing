@@ -1,6 +1,6 @@
 # Bearing fault detection with topological data analysis
 
-###Author: Niklas Hellmer, github.com/nihell, nhellmer at impan dot pl
+### Author: Niklas Hellmer, github.com/nihell, nhellmer at impan dot pl
 
 This repo accompanies our recent paper LINK.
 
